@@ -205,7 +205,7 @@ async def back_to_main_menu(callback: types.CallbackQuery):
     await show_main_menu(callback, bot_config["class_name"])
     await callback.answer()
 
-# Render bepul serverida bot o'chib qolmasligi uchun kichik veb-server va majburiy brauzer o'rnatish
+# Render bepul serverida portni lahzada ochadigan tezkor veb-server
 async def start_web_server():
     from aiohttp import web
     
@@ -222,8 +222,15 @@ async def start_web_server():
     await site.start()
 
 async def main():
-    # 1. Render talab qiladigan yashirin veb-serverni fonda yoqamiz
+    # 1. Eng birinchi bo'lib portni lahzada ochamiz, Render o'chira olmasligi uchun
     await start_web_server()
     
-    # 2. Telegram botni ishga tushiramiz
-    await dp.start_polling(bot)
+    # 2. Telegram botni orqa fonda mustaqil vazifa qilib ishga tushiramiz
+    asyncio.create_task(dp.start_polling(bot))
+    
+    # 3. Server o'chib qolmasligi uchun uni doimiy cheksiz uyqu rejimida ushlab turamiz
+    while True:
+        await asyncio.sleep(3600)
+
+if __name__ == "__main__":
+    asyncio.run(main())
