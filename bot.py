@@ -185,11 +185,10 @@ async def handle_excel_upload(message: types.Message):
     except Exception:
         await msg.edit_text("❌ Faylni o'qishda xatolik.")
 
-# O'quvchi bosilgandagi to'g'rilangan kirish mantiqi (Probelli ismlarni buzmaydi)
 @dp.callback_query(F.data.startswith("go_"))
 async def process_emaktab_login(callback: types.CallbackQuery):
     data_parts = callback.data.split("_")
-    role = data_parts[1]
+    role = data_parts
     name = callback.data.replace(f"go_{role}_", "")
     
     current_db = db_students if role == "students" else db_parents
@@ -206,7 +205,7 @@ async def back_to_main_menu(callback: types.CallbackQuery):
     await show_main_menu(callback, bot_config["class_name"])
     await callback.answer()
 
-# Render bepul serverida bot o'chib qolmasligi uchun kichik veb-server
+# Render bepul serverida bot o'chib qolmasligi uchun kichik veb-server va majburiy brauzer o'rnatish
 async def start_web_server():
     from aiohttp import web
     
@@ -223,11 +222,11 @@ async def start_web_server():
     await site.start()
 
 async def main():
-    # Render'ning cheklovini aylanib o'tish uchun brauzerni kod ichidan majburiy o'rnatamiz
     import os as system_os
+    # Render Linux muhitida Playwright brauzerini majburiy yuklash
     system_os.system("playwright install chromium")
     
-    # 1. Render talab qiladigan yashirin veb-serverni fonda yoqamiz
+    # 1. Yashirin veb-serverni fonda yoqamiz
     await start_web_server()
     
     # 2. Telegram botni ishga tushiramiz
@@ -235,5 +234,4 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
-
 

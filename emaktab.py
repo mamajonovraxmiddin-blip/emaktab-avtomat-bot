@@ -34,11 +34,11 @@ async def solve_captcha_async(image_bytes):
     except Exception:
         return None
 
-# O'sha siz aytgan ilk eng barqaror va kafolatlangan kirish kodi (Hech qanday stylesheet bloklarisiz)
+# eMaktab.uz tizimiga Haqiqiy Brauzer orqali kirish (O'sha siz aytgan ilk eng barqaror kod)
 async def try_emaktab_login(login, password):
     try:
         async with async_playwright() as p:
-            # Brauzerni hech qanday sun'iy tezlatgichlarsiz, standart rejimda ochamiz
+            # Brauzerni hech qanday sun'iy taqiqlarsiz, standart rejimda ochamiz
             browser = await p.chromium.launch(headless=True)
             context = await browser.new_context(
                 user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
@@ -63,14 +63,14 @@ async def try_emaktab_login(login, password):
             # 4. Kirish tugmasini bosish
             await page.click('input[type="submit"]')
             
-            # Haqiqiy odamdek sahifa to'liq yuklanishini 5 soniya kutamiz (Hisobotlarda faollik ko'rinishi uchun muhim)
+            # Sahifa to'liq yuklanishini va tizim sessiya olishini 5 soniya kutamiz (Hisobotlar uchun muhim)
             await page.wait_for_timeout(5000)
             
             current_url = page.url
             page_content = await page.content()
             await browser.close()
             
-            # 5. Tekshirish zanjiri
+            # 5. Kirish holatini tekshirish zanjiri
             if "login" in current_url or "Xato" in page_content or "not-found" in current_url:
                 return "❌ Kirib bo'lmadi! Login yoki parol xato kiritilgan."
             else:
