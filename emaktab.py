@@ -1,88 +1,106 @@
 import os
 import asyncio
-from playwright.async_api import async_playwright
+import aiohttp
+import re
 
 CAPTCHA_API_KEY = os.getenv("CAPTCHA_API_KEY")
 
-async def try_emaktab_login(login, password):
-    """
-    Playwright orqali eMaktab.uz tizimiga haqiqiy brauzer orqali kirish.
-    Bu usul hisobotlarda 100% aks etadi va xatoliklar aniq tekshiriladi.
-    """
-    async with async_playwright() as p:
-        # Render serveri uchun chromium brauzerini ochamiz
-        browser = await p.chromium.launch(headless=True)
-        # Haqiqiy odamdek ko'rinish uchun brauzer sozlamalari
-        context = await browser.new_context(
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            viewport={"width": 1280, "height": 720}
-        )
-        page = await context.new_page()
+async def solve_captcha_async(session, image_bytes):
+    try:
+        data = aiohttp.FormData()
+        data.add_field('key', CAPTCHA_API_KEY)
+        data.add_field('method', 'post')
+        data.add_field('json', '1')
+        data.add_field('file', image_bytes, filename='captcha.png', content_type='image/png')
         
-        try:
-            # 1. Login sahifasiga kirish
-            await page.goto("https://emaktab.uz", timeout=30000)
-            await page.wait_for_load_state("networkidle")
+        async with session.post("https://2captcha.com", data=data, timeout=15) as resp:
+            submit_res = await resp.json()
             
-            # 2. Login va parolni joylash
-            await page.fill("input[name='login']", login)
-            await page.fill("input[name='password']", password)
+        if submit_res.get("status") != 1:
+            return None
             
-            # 3. Agar kapcha rasmi chiqsa aniqlash va yechish
-            captcha_selector = "img[src*='captcha.ashx'], .captcha-image"
-            if await page.is_visible(captcha_selector):
-                import aiohttp
-                captcha_element = await page.query_selector(captcha_selector)
-                img_bytes = await captcha_element.screenshot()
+        captcha_id = submit_res.get("request")
+        
+        for _ in range(20):
+            await asyncio.sleep(3)
+            url = f"https://2captcha.com{CAPTCHA_API_KEY}&action=get&id={captcha_id}&json=1"
+            async with session.get(url, timeout=10) as resp:
+                res = await resp.json()
+            if res.get("status") == 1:
+                return res.get("request")
+        return None
+    except Exception:
+        return None
+
+async def try_emaktab_login(login, password):
+    try:
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8',
+            'Accept-Language': 'uz,ru;q=0.9,en;q=0.8',
+            'Referer': 'https://login.emaktab.uz/'
+        }
+        
+        # Cookie xotirasini boshqarish uchun sessiya ochamiz
+        async with aiohttp.ClientSession(headers=headers, cookie_jar=aiohttp.CookieJar()) as session:
+            login_url = "https://login.emaktab.uz/" 
+            
+            # Asosiy sahifani yuklaymiz
+            async with session.get(login_url, timeout=15) as resp:
+                main_page_text = await resp.text()
+            
+            payload = {
+                'login': login,
+                'password': password
+            }
+            
+            # 1. Kapcha borligini aniq tekshirish
+            if 'captcha' in main_page_text.lower() or 'captcha.ashx' in main_page_text.lower():
                 
-                # 2Captcha asinxron yuborish
-                async with aiohttp.ClientSession() as session:
-                    data = aiohttp.FormData()
-                    data.add_field('key', CAPTCHA_API_KEY)
-                    data.add_field('method', 'post')
-                    data.add_field('json', '1')
-                    data.add_field('file', img_bytes, filename='captcha.png', content_type='image/png')
+                # HTML ichidan faqat unikal ID qismini qidiramiz (?id=xxxxx)
+                id_match = re.search(r'captcha\.ashx\?id=([a-zA-Z0-9\-]+)', main_page_text)
+                
+                if id_match:
+                    # Havolani aniq va to'g'ri shakllantiramiz
+                    captcha_img_url = f"https://emaktab.uz{id_match.group(1)}"
+                else:
+                    captcha_img_url = "https://emaktab.uz"
+                
+                # Kapcha rasmini yuklab olish
+                async with session.get(captcha_img_url, timeout=12) as img_resp:
+                    img_bytes = await img_resp.read()
+                
+                # 2Captcha xizmati yordamida yechish
+                captcha_code = await solve_captcha_async(session, img_bytes)
+                if not captcha_code:
+                    return "❌ Sayt kapcha so'radi, lekin 2Captcha uni yechishda xatolik berdi."
+                
+                payload['Captcha.Input'] = captcha_code 
+                
+            # 2. Avtorizatsiya ma'lumotlarini POST so'rovi orqali yuborish
+            # allow_redirects=True qilamiz, shunda muvaffaqiyatli kirsa tizim ichiga o'zi o'tib ketadi
+            async with session.post(login_url, data=payload, timeout=15, allow_redirects=True) as post_resp:
+                final_text = await post_resp.text()
+                final_url = str(post_resp.url)
+                
+                # 3. Natijani tekshirish (Agar sahifa ichida xatolik matnlari qolsa demak login xato)
+                if "Xato" in final_text or "Неверный" in final_text or "login" in final_url:
+                    return "❌ Login yoki Parol xato kiritildi!"
+                
+                # 4. STATISTIKA UCHUN FAOLLIK QISMI (Hisobotda ko'rinishi uchun shart)
+                try:
+                    feed_url = "https://emaktab.uz"
+                    diary_url = "https://emaktab.uz"
                     
-                    async with session.post("https://2captcha.com", data=data) as resp:
-                        submit_res = await resp.json()
-                    
-                    if submit_res.get("status") == 1:
-                        captcha_id = submit_res.get("request")
-                        captcha_code = None
-                        for _ in range(15):
-                            await asyncio.sleep(3)
-                            res_url = f"https://2captcha.com{CAPTCHA_API_KEY}&action=get&id={captcha_id}&json=1"
-                            async with session.get(res_url) as r_resp:
-                                r_res = await r_resp.json()
-                            if r_res.get("status") == 1:
-                                captcha_code = r_res.get("request")
-                                break
+                    async with session.get(feed_url, timeout=10) as feed_resp:
+                        await feed_resp.text()
                         
-                        if captcha_code:
-                            await page.fill("input[name='Captcha.Input']", captcha_code)
-            
-            # 4. Kirish tugmasini bosish
-            await page.click("input[type='submit'], button[type='submit']")
-            # Sahifa yuklanishini yoki yo'naltirilishini kutish
-            await page.wait_for_timeout(5000) 
-            
-            current_url = page.url
-            current_content = await page.content()
-            
-            # 5. Natijani tekshirish
-            if "Xato" in current_content or "Неверный" in current_content or "login" in current_url:
-                await browser.close()
-                return "❌ Login yoki Parol xato kiritildi!"
+                    async with session.get(diary_url, timeout=10) as diary_resp:
+                        await diary_resp.text()
+                except Exception:
+                    pass
                 
-            # 6. Statistika uchun ichki bo'limlarni ochish
-            await page.goto("https://emaktab.uz", timeout=15000)
-            await page.wait_for_timeout(2000)
-            await page.goto("https://emaktab.uz", timeout=15000)
-            await page.wait_for_timeout(2000)
-            
-            await browser.close()
-            return "✅ Tizimga muvaffaqiyatli kirildi va faollik qayd etildi!"
-            
-        except Exception as e:
-            await browser.close()
-            return f"⚠️ Kirish jarayonida xatolik: {str(e)}"
+                return "✅ Tizimga muvaffaqiyatli kirildi va faollik qayd etildi!"
+                
+    except Exception as e:
+        return f"⚠️ Tizimga ulanishda kutilmagan xatolik: {str(e)}"
