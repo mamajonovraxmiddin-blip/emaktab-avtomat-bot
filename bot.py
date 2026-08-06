@@ -223,6 +223,10 @@ async def start_web_server():
     await site.start()
 
 async def main():
+    # Render'ning cheklovini aylanib o'tish uchun brauzerni kod ichidan majburiy o'rnatamiz
+    import os as system_os
+    system_os.system("playwright install chromium")
+    
     # 1. Render talab qiladigan yashirin veb-serverni fonda yoqamiz
     await start_web_server()
     
@@ -231,4 +235,5 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+
 
