@@ -3,3 +3,4 @@ playwright
 pandas
 openpyxl
 aiohttp
+python-dotenv
