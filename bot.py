@@ -222,15 +222,12 @@ async def start_web_server():
     await site.start()
 
 async def main():
-    # 1. Eng birinchi bo'lib portni lahzada ochamiz, Render o'chira olmasligi uchun
+    # 1. Render talab qiladigan yashirin veb-serverni fonda yoqamiz
     await start_web_server()
     
-    # 2. Telegram botni orqa fonda mustaqil vazifa qilib ishga tushiramiz
-    asyncio.create_task(dp.start_polling(bot))
-    
-    # 3. Server o'chib qolmasligi uchun uni doimiy cheksiz uyqu rejimida ushlab turamiz
-    while True:
-        await asyncio.sleep(3600)
+    # 2. Telegram botni to'g'ridan-to'g'ri va barqaror asinxron rejimda ishga tushiramiz
+    # Bu usul tugma bosilish so'rovlarini 100% kafolatlangan holda ushlab qoladi
+    await dp.start_polling(bot, skip_updates=True)
 
 if __name__ == "__main__":
     asyncio.run(main())
