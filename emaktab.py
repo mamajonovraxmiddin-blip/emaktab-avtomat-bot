@@ -1,7 +1,6 @@
 import os
 import asyncio
 import aiohttp
-import re
 
 CAPTCHA_API_KEY = os.getenv("CAPTCHA_API_KEY")
 
@@ -38,14 +37,13 @@ async def try_emaktab_login(login, password):
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
             'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8',
             'Accept-Language': 'uz,ru;q=0.9,en;q=0.8',
-            'Referer': 'https://login.emaktab.uz/'
+            'Referer': 'https://emaktab.uz'
         }
         
-        # Cookie xotirasini boshqarish uchun sessiya ochamiz
         async with aiohttp.ClientSession(headers=headers, cookie_jar=aiohttp.CookieJar()) as session:
-            login_url = "https://login.emaktab.uz/" 
+            login_url = "https://emaktab.uz" 
             
-            # Asosiy sahifani yuklaymiz
+            # 1. Asosiy login sahifasini sessiya bilan birga yuklaymiz
             async with session.get(login_url, timeout=15) as resp:
                 main_page_text = await resp.text()
             
@@ -54,36 +52,29 @@ async def try_emaktab_login(login, password):
                 'password': password
             }
             
-            # 1. Kapcha borligini aniq tekshirish
-            if 'captcha' in main_page_text.lower() or 'captcha.ashx' in main_page_text.lower():
+            # Sahifada kapcha borligini tekshiramiz
+            if 'captcha' in main_page_text.lower():
+                # RegEx qidiruvini osonlashtirish uchun aniq URL manzilini olamiz
+                # eMaktab'da asosan bitta umumiy dinamik keshli manzil ishlaydi
+                captcha_img_url = "https://emaktab.uzcaptcha.ashx"
                 
-                # HTML ichidan faqat unikal ID qismini qidiramiz (?id=xxxxx)
-                id_match = re.search(r'captcha\.ashx\?id=([a-zA-Z0-9\-]+)', main_page_text)
-                
-                if id_match:
-                    # Havolani aniq va to'g'ri shakllantiramiz
-                    captcha_img_url = f"https://emaktab.uz{id_match.group(1)}"
-                else:
-                    captcha_img_url = "https://emaktab.uz"
-                
-                # Kapcha rasmini yuklab olish
+                # Aynan ochilgan o'sha faol sessiya (cookie) ichidan rasmni yuklaymiz
                 async with session.get(captcha_img_url, timeout=12) as img_resp:
                     img_bytes = await img_resp.read()
                 
-                # 2Captcha xizmati yordamida yechish
+                # Kapcha rasmini balans tekshiruvi bilan yechishga yuboramiz
                 captcha_code = await solve_captcha_async(session, img_bytes)
                 if not captcha_code:
-                    return "❌ Sayt kapcha so'radi, lekin 2Captcha uni yechishda xatolik berdi."
+                    return "❌ Sayt kapcha so'radi, lekin 2Captcha xizmati javob qaytara olmadi."
                 
                 payload['Captcha.Input'] = captcha_code 
                 
-            # 2. Avtorizatsiya ma'lumotlarini POST so'rovi orqali yuborish
-            # allow_redirects=True qilamiz, shunda muvaffaqiyatli kirsa tizim ichiga o'zi o'tib ketadi
+            # 2. Login so'rovini yuborish
             async with session.post(login_url, data=payload, timeout=15, allow_redirects=True) as post_resp:
                 final_text = await post_resp.text()
                 final_url = str(post_resp.url)
                 
-                # 3. Natijani tekshirish (Agar sahifa ichida xatolik matnlari qolsa demak login xato)
+                # 3. Natijani tekshirish
                 if "Xato" in final_text or "Неверный" in final_text or "login" in final_url:
                     return "❌ Login yoki Parol xato kiritildi!"
                 
