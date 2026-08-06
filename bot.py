@@ -147,7 +147,7 @@ async def view_list(callback: types.CallbackQuery):
 
 @dp.callback_query(F.data.startswith("change_"))
 async def change_list_template(callback: types.CallbackQuery):
-    role = callback.data.split("_")
+    role = callback.data.split("_")[1]
     label = "o'quvchilar" if role == "students" else "ota-onalar"
     df = pd.DataFrame(columns=["Ism_Familiya", "Login", "Parol"])
     output = io.BytesIO()
@@ -188,7 +188,7 @@ async def handle_excel_upload(message: types.Message):
 @dp.callback_query(F.data.startswith("go_"))
 async def process_emaktab_login(callback: types.CallbackQuery):
     data_parts = callback.data.split("_")
-    role = data_parts
+    role = data_parts[1] # indeks 1 etib to'g'rilandi
     name = callback.data.replace(f"go_{role}_", "")
     
     current_db = db_students if role == "students" else db_parents
@@ -205,7 +205,7 @@ async def back_to_main_menu(callback: types.CallbackQuery):
     await show_main_menu(callback, bot_config["class_name"])
     await callback.answer()
 
-# Render bepul serverida portni lahzada ochadigan tezkor veb-server
+# Web server Render uchun
 async def start_web_server():
     from aiohttp import web
     
@@ -222,11 +222,10 @@ async def start_web_server():
     await site.start()
 
 async def main():
-    # 1. Render talab qiladigan yashirin veb-serverni fonda yoqamiz
+    # 1. Render talab qiladigan veb-serverni fonda yoqamiz
     await start_web_server()
     
     # 2. Telegram botni to'g'ridan-to'g'ri va barqaror asinxron rejimda ishga tushiramiz
-    # Bu usul tugma bosilish so'rovlarini 100% kafolatlangan holda ushlab qoladi
     await dp.start_polling(bot, skip_updates=True)
 
 if __name__ == "__main__":
