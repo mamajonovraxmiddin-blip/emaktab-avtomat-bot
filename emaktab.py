@@ -43,7 +43,6 @@ async def try_emaktab_login(login, password):
         async with aiohttp.ClientSession(headers=headers, cookie_jar=aiohttp.CookieJar()) as session:
             login_url = "https://emaktab.uz" 
             
-            # 1. Asosiy login sahifasini sessiya bilan birga yuklaymiz
             async with session.get(login_url, timeout=15) as resp:
                 main_page_text = await resp.text()
             
@@ -52,33 +51,26 @@ async def try_emaktab_login(login, password):
                 'password': password
             }
             
-            # Sahifada kapcha borligini tekshiramiz
             if 'captcha' in main_page_text.lower():
-                # RegEx qidiruvini osonlashtirish uchun aniq URL manzilini olamiz
-                # eMaktab'da asosan bitta umumiy dinamik keshli manzil ishlaydi
+                # Hech qanday RegEx-siz, faqat aniq statik havola
                 captcha_img_url = "https://emaktab.uzcaptcha.ashx"
                 
-                # Aynan ochilgan o'sha faol sessiya (cookie) ichidan rasmni yuklaymiz
                 async with session.get(captcha_img_url, timeout=12) as img_resp:
                     img_bytes = await img_resp.read()
                 
-                # Kapcha rasmini balans tekshiruvi bilan yechishga yuboramiz
                 captcha_code = await solve_captcha_async(session, img_bytes)
                 if not captcha_code:
                     return "❌ Sayt kapcha so'radi, lekin 2Captcha xizmati javob qaytara olmadi."
                 
                 payload['Captcha.Input'] = captcha_code 
                 
-            # 2. Login so'rovini yuborish
             async with session.post(login_url, data=payload, timeout=15, allow_redirects=True) as post_resp:
                 final_text = await post_resp.text()
                 final_url = str(post_resp.url)
                 
-                # 3. Natijani tekshirish
                 if "Xato" in final_text or "Неверный" in final_text or "login" in final_url:
                     return "❌ Login yoki Parol xato kiritildi!"
                 
-                # 4. STATISTIKA UCHUN FAOLLIK QISMI (Hisobotda ko'rinishi uchun shart)
                 try:
                     feed_url = "https://emaktab.uz"
                     diary_url = "https://emaktab.uz"
