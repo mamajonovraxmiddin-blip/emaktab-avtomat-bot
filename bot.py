@@ -206,8 +206,29 @@ async def back_to_main_menu(callback: types.CallbackQuery):
     await show_main_menu(callback, bot_config["class_name"])
     await callback.answer()
 
+# Render bepul serverida bot o'chib qolmasligi uchun kichik veb-server
+async def start_web_server():
+    from aiohttp import web
+    
+    async def handle(request):
+        return web.Response(text="Bot is running active!")
+        
+    app = web.Application()
+    app.router.add_get('/', handle)
+    
+    port = int(os.getenv("PORT", 10000))
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, '0.0.0.0', port)
+    await site.start()
+
 async def main():
+    # 1. Render talab qiladigan yashirin veb-serverni fonda yoqamiz
+    await start_web_server()
+    
+    # 2. Telegram botni ishga tushiramiz
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
     asyncio.run(main())
+
