@@ -222,16 +222,8 @@ async def start_web_server():
     await site.start()
 
 async def main():
-    import os as system_os
-    # Render Linux muhitida Playwright brauzerini majburiy yuklash
-    system_os.system("playwright install chromium")
-    
-    # 1. Yashirin veb-serverni fonda yoqamiz
+    # 1. Render talab qiladigan yashirin veb-serverni fonda yoqamiz
     await start_web_server()
     
     # 2. Telegram botni ishga tushiramiz
     await dp.start_polling(bot)
-
-if __name__ == "__main__":
-    asyncio.run(main())
-
