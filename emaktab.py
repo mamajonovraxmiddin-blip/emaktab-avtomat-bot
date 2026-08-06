@@ -71,15 +71,34 @@ async def try_emaktab_login(login, password):
                 if "Xato" in final_text or "Неверный" in final_text or "login" in final_url:
                     return "❌ Login yoki Parol xato kiritildi!"
                 
+                                # 4. STATISTIKA UCHUN FAOLLIK QISMI (Hisobotda ko'rinishi uchun shart)
                 try:
-                    feed_url = "https://emaktab.uz"
-                    diary_url = "https://emaktab.uz"
+                    import datetime
+                    bugun = datetime.date.today().strftime("%Y-%m-%d")
                     
+                    # Tizim o'quvchi kirdi deb hisoboti yangilaydigan asosiy manzillar:
+                    feed_url = "https://emaktab.uz"
+                    diary_url = f"https://emaktab.uz{bugun}" # Bugungi kunlik sahifasi
+                    tasks_url = "https://emaktab.uz"
+                    
+                    # 1. Asosiy lenta (Dashboard) yuklanishi
                     async with session.get(feed_url, timeout=10) as feed_resp:
                         await feed_resp.text()
                         
+                    # 2. Bugungi kunlik darslar jadvalini to'liq ochish (Bu statistika uchun eng muhimi!)
                     async with session.get(diary_url, timeout=10) as diary_resp:
                         await diary_resp.text()
+                        
+                    # 3. Uy vazifalari sahifasini yangilash
+                    async with session.get(tasks_url, timeout=10) as tasks_resp:
+                        await tasks_resp.text()
+                        
+                    # 4. eMaktab hisobot tizimiga "Sessiya faol" degan bildirishnomani majburiy yuborish
+                    # Ba'zan tizim bildirishnomalar (Notification) API orqali hisobotni yangilaydi
+                    api_check_url = "https://emaktab.uz"
+                    async with session.get(api_check_url, timeout=10) as api_resp:
+                        await api_resp.text()
+                        
                 except Exception:
                     pass
                 
