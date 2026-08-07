@@ -1,4 +1,4 @@
-FROM mcr microsoft.com
+FROM mcrmicrosoft.com
 WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
