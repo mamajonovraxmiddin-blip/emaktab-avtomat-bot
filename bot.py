@@ -1,232 +1,256 @@
 import os
 import io
+import openpyxl
 import asyncio
-import pandas as pd
-from dotenv import load_dotenv
+import sqlite3
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
-from aiogram.utils.keyboard import InlineKeyboardBuilder
-from aiogram.types import BufferedInputFile
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
-
-# emaktab faylidan funksiyani ulaymiz
-from emaktab import try_emaktab_login
+from aiogram.utils.keyboard import InlineKeyboardBuilder
+from emaktab import run_emaktab_login
+from dotenv import load_dotenv
+from cryptography.fernet import Fernet  # Shifrlash uchun
 
 load_dotenv()
-BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-MASTER_SECRET_CODE = os.getenv("MASTER_SECRET_CODE")
+
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+SPECIAL_CODE = os.getenv("SPECIAL_CODE", "12345")
+ENCRYPTION_KEY = os.getenv("ENCRYPTION_KEY")
+
+# Shifrlash menejerini ishga tushirish
+fernet = Fernet(ENCRYPTION_KEY.encode())
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
-class SetupState(StatesGroup):
-    waiting_for_class_name = State()
-    waiting_for_secret_code = State()
+# ----------------- MA'LUMOTLAR BAZASI BILAN ISHLASH (SQLITE) -----------------
+DB_NAME = "emaktab_bot.db"
 
-bot_config = {"class_name": "8-G", "is_authorized": False, "entered_pin": ""}
-db_students = {}
-db_parents = {}
+def init_db():
+    """Ma'lumotlar bazasi va jadvallarni yaratish"""
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    # Sinf nomini saqlash uchun jadval
+    cursor.execute('''CREATE TABLE IF NOT EXISTS config (key TEXT PRIMARY KEY, value TEXT)''')
+    # Foydalanuvchilar (O'quvchi va ota-onalar) jadvali
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS users (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_type TEXT,
+            name TEXT,
+            login TEXT,
+            password TEXT
+        )
+    ''')
+    conn.commit()
+    conn.close()
 
-# PIN-kod klaviaturasi
-def get_pin_keyboard():
+def set_class_name(class_name):
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute("INSERT OR REPLACE INTO config (key, value) VALUES ('class_name', ?)", (class_name,))
+    conn.commit()
+    conn.close()
+
+def get_class_name():
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute("SELECT value FROM config WHERE key = 'class_name'")
+    row = cursor.fetchone()
+    conn.close()
+    return row[0] if row else "Noma'lum"
+
+def save_users_to_db(user_type, users_list):
+    """Foydalanuvchilarni parolini shifrlab bazaga saqlash"""
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    # Avvalgi eski ro'yxatni o'chirib tashlaymiz (Refresh funksiyasi uchun)
+    cursor.execute("DELETE FROM users WHERE user_type = ?", (user_type,))
+    
+    for user in users_list:
+        # Parolni xavfsiz AES-256 ko'rinishida shifrlash
+        encrypted_password = fernet.encrypt(user['password'].encode()).decode()
+        cursor.execute(
+            "INSERT INTO users (user_type, name, login, password) VALUES (?, ?, ?, ?)",
+            (user_type, user['name'], user['login'], encrypted_password)
+        )
+    conn.commit()
+    conn.close()
+
+def get_users_from_db(user_type):
+    """Bazadan foydalanuvchilarni o'qish va parolini deshifrlash"""
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute("SELECT name, login, password FROM users WHERE user_type = ?", (user_type,))
+    rows = cursor.fetchall()
+    conn.close()
+    
+    users_list = []
+    for row in rows:
+        try:
+            # Shifrlangan parolni qayta asl holiga keltirish
+            decrypted_password = fernet.decrypt(row[2].encode()).decode()
+            users_list.append({
+                "name": row[0],
+                "login": row[1],
+                "password": decrypted_password
+            })
+        except Exception:
+            continue
+    return users_list
+
+# Bazani dastur boshlanishida faollashtiramiz
+init_db()
+# -----------------------------------------------------------------------------
+
+class BotStates(StatesGroup):
+    waiting_for_class = State()
+    waiting_for_code = State()
+    main_menu = State()
+
+def create_excel_template():
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.append(["Ismi va Familiyasi", "Login", "Parol"])
+    ws.append(["Eshmatov Toshmat", "eshmat123", "pas12345"])
+    file_stream = io.BytesIO()
+    wb.save(file_stream)
+    file_stream.seek(0)
+    return file_stream
+
+def build_dynamic_keyboard(user_type):
     builder = InlineKeyboardBuilder()
-    for i in range(1, 10):
-        builder.button(text=str(i), callback_data=f"pin_num_{i}")
-    builder.button(text="❌ C", callback_data="pin_clear")
-    builder.button(text="0", callback_data="pin_num_0")
-    builder.button(text="✅ OK", callback_data="pin_submit")
-    builder.adjust(3)
+    # Ma'lumotlarni RAMdan emas, xavfsiz bazadan yuklaymiz
+    data_list = get_users_from_db(user_type)
+    
+    for idx, user in enumerate(data_list):
+        builder.button(text=f"👤 {user['name']}", callback_data=f"login:{user_type}:{idx}")
+    builder.adjust(2)
+    
+    builder.row(types.InlineKeyboardButton(text="🔄 Ro'yhatni yangilash", callback_data=f"refresh:{user_type}"))
+    builder.row(types.InlineKeyboardButton(text="⬅️ Ortga", callback_data="back_to_menu"))
     return builder.as_markup()
 
-# Asosiy menyu
-async def show_main_menu(message_or_callback, class_name):
-    builder = InlineKeyboardBuilder()
-    builder.row(types.InlineKeyboardButton(text="👨‍🎓 O'quvchilar ro'yxati", callback_data="view_students"))
-    builder.row(types.InlineKeyboardButton(text="🧓 Ota-onalar ro'yxati", callback_data="view_parents"))
-    text = f"✨ <b>{class_name} sinf</b> uchun emaktab.uz platformasiga kirishni amalga oshiruvchi botga xush kelibsiz!\n\nKerakli bo'limni tanlang:"
-    
-    try:
-        if isinstance(message_or_callback, types.Message):
-            await message_or_callback.answer(text, reply_markup=builder.as_markup(), parse_mode="HTML")
-        else:
-            await message_or_callback.message.answer(text, reply_markup=builder.as_markup(), parse_mode="HTML")
-    except Exception:
-        pass
-
 @dp.message(Command("start"))
-async def start_handler(message: types.Message, state: FSMContext):
-    await state.clear()
-    bot_config["entered_pin"] = ""
-    if bot_config["is_authorized"]:
-        await show_main_menu(message, bot_config["class_name"])
-    else:
-        await message.answer("👋 Salom! Men eMaktab avtomatlashtirish botiman.\n\nIltimos, sinf nomini kiriting (Masalan: <b>8-G</b>):", parse_mode="HTML")
-        await state.set_state(SetupState.waiting_for_class_name)
+async def cmd_start(message: types.Message, state: FSMContext):
+    await message.answer("✨ **Salom, men emaktab.uz saytiga kiradigan botman.**", parse_mode="Markdown")
+    await message.answer("📝 Iltimos sinfingiz raqami va nomini kriting:\n*(Misol uchun: 9-A, 4-B)*", parse_mode="Markdown")
+    await state.set_state(BotStates.waiting_for_class)
 
-@dp.message(SetupState.waiting_for_class_name)
-async def process_class_name(message: types.Message, state: FSMContext):
-    await state.update_data(class_name=message.text.strip())
-    await message.answer("✅ Sinf nomi qabul qilindi.\n\n⚠️ Botdan foydalanish uchun <b>PIN-kodni bosing</b>:\nKiritildi: <code>Ochiq maydon</code>", reply_markup=get_pin_keyboard(), parse_mode="HTML")
-    await state.set_state(SetupState.waiting_for_secret_code)
+@dp.message(BotStates.waiting_for_class, F.text)
+async def process_class(message: types.Message, state: FSMContext):
+    set_class_name(message.text.strip()) # Bazaga saqlash
+    await message.answer("🔒 **Iltimos maxsus kodni kriting:**", parse_mode="Markdown")
+    await state.set_state(BotStates.waiting_for_code)
 
-@dp.callback_query(SetupState.waiting_for_secret_code, F.data.startswith("pin_num_"))
-async def process_pin_digits(callback: types.CallbackQuery, state: FSMContext):
-    num = callback.data.split("_")[-1]
-    bot_config["entered_pin"] += str(num)
-    stars = "⭐" * len(bot_config["entered_pin"])
-    
+@dp.message(BotStates.waiting_for_code, F.text)
+async def process_code(message: types.Message, state: FSMContext):
+    user_code = message.text.strip()
     try:
-        await callback.message.edit_text(f"⚠️ Botdan foydalanish uchun <b>PIN-kodni bosing</b>:\nKiritildi: {stars}", reply_markup=get_pin_keyboard(), parse_mode="HTML")
+        await message.delete()
     except Exception:
         pass
-    await callback.answer()
-
-@dp.callback_query(SetupState.waiting_for_secret_code, F.data == "pin_clear")
-async def process_pin_clear(callback: types.CallbackQuery, state: FSMContext):
-    bot_config["entered_pin"] = ""
-    try:
-        await callback.message.edit_text("⚠️ Botdan foydalanish uchun <b>PIN-kodni bosing</b>:\nKiritildi: <code>Ochiq maydon</code>", reply_markup=get_pin_keyboard(), parse_mode="HTML")
-    except Exception:
-        pass
-    await callback.answer()
-
-@dp.callback_query(SetupState.waiting_for_secret_code, F.data == "pin_submit")
-async def process_pin_submit(callback: types.CallbackQuery, state: FSMContext):
-    user_data = await state.get_data()
-    class_name = user_data.get("class_name")
-    
-    if len(bot_config["entered_pin"]) < 4:
-        await callback.answer("❌ PIN-kod uzunligi kamida 4 ta raqam bo'lishi kerak!", show_alert=True)
-        return
         
-    if str(bot_config["entered_pin"]) == str(MASTER_SECRET_CODE):
-        bot_config["class_name"] = class_name
-        bot_config["is_authorized"] = True
-        await state.clear()
-        try:
-            await callback.message.delete()
-        except Exception:
-            pass
-        await callback.message.answer("🔒 Kod to'g'ri! Bot muvaffaqiyatli faollashtirildi.")
-        await show_main_menu(callback, class_name)
+    if user_code == SPECIAL_CODE:
+        await message.answer("🔒 Maxsus kod: `*****` *(Yashirildi)*", parse_mode="Markdown")
+        
+        kb = [
+            [types.KeyboardButton(text="👨‍🎓 O'quvchilar ro'yhati")],
+            [types.KeyboardButton(text="👨‍👩‍👦 Ota-onalar ro'yhati")]
+        ]
+        keyboard = types.ReplyKeyboardMarkup(keyboard=kb, resize_keyboard=True)
+        class_name = get_class_name()
+        await message.answer(f"✅ Kod to'g'ri! Tizim tayyor. Sinf: **{class_name}**\nQuyidagi bo'limlardan birini tanlang:", reply_markup=keyboard, parse_mode="Markdown")
+        await state.set_state(BotStates.main_menu)
     else:
-        bot_config["entered_pin"] = ""
-        await callback.answer("❌ PIN-kod noto'g'ri!", show_alert=True)
-        try:
-            await callback.message.edit_text("❌ PIN-kod noto'g'ri! Qaytadan kiriting:\nKiritildi: <code>Ochiq maydon</code>", reply_markup=get_pin_keyboard(), parse_mode="HTML")
-        except Exception:
-            pass
+        await message.answer("❌ Maxsus kod noto'g'ri! Qayta kriting:")
 
-@dp.callback_query(F.data.in_({"view_students", "view_parents"}))
-async def view_list(callback: types.CallbackQuery):
-    if not bot_config["is_authorized"]: return
-    role = "students" if callback.data == "view_students" else "parents"
-    current_db = db_students if role == "students" else db_parents
-    label = "o'quvchilar" if role == "students" else "ota-onalar"
-    builder = InlineKeyboardBuilder()
-
-    if not current_db:
-        df = pd.DataFrame(columns=["Ism_Familiya", "Login", "Parol"])
-        output = io.BytesIO()
-        with pd.ExcelWriter(output, engine='openpyxl') as writer:
-            df.to_excel(writer, index=False)
-        template = BufferedInputFile(output.getvalue(), filename=f"{bot_config['class_name']}_{label}_shabloni.xlsx")
-        await callback.message.answer_document(template, caption=f"⚠️ Tizimda {label} ro'yxati yo'q. To'ldirib yuboring.")
+@dp.message(BotStates.main_menu, F.text.in_(["👨‍🎓 O'quvchilar ro'yhati", "👨‍👩‍👦 Ota-onalar ro'yhati"]))
+async def process_menu_selection(message: types.Message):
+    user_type = "students" if "O'quvchilar" in message.text else "parents"
+    current_list = get_users_from_db(user_type)
+    
+    if not current_list:
+        excel_file = create_excel_template()
+        file_input = types.BufferedInputFile(excel_file.read(), filename=f"{user_type}_namuna.xlsx")
+        await message.reply_document(
+            file_input, 
+            caption=f"📋 Sizda hali ro'yxat yuklanmagan.\nUshbu toza namuna faylini yuklab oling, to'ldirib botga qayta yuboring."
+        )
     else:
-        for name in current_db.keys():
-            builder.button(text=name, callback_data=f"go_{role}_{name}")
-        builder.adjust(2)
-        builder.row(types.InlineKeyboardButton(text="🔄 Ro'yxatni o'zgartirish", callback_data=f"change_{role}"))
-        builder.row(types.InlineKeyboardButton(text="⬅️ Ortga", callback_data="back_main"))
-        try:
-            await callback.message.edit_text(f"📋 {bot_config['class_name']} sinf {label} ro'yxati:", reply_markup=builder.as_markup())
-        except Exception:
-            pass
-    await callback.answer()
+        markup = build_dynamic_keyboard(user_type)
+        await message.answer(f"📋 **{message.text}** bo'limi foydalanuvchini tanlang:", reply_markup=markup, parse_mode="Markdown")
 
-@dp.callback_query(F.data.startswith("change_"))
-async def change_list_template(callback: types.CallbackQuery):
-    role = callback.data.split("_")[1]
-    label = "o'quvchilar" if role == "students" else "ota-onalar"
-    df = pd.DataFrame(columns=["Ism_Familiya", "Login", "Parol"])
-    output = io.BytesIO()
-    with pd.ExcelWriter(output, engine='openpyxl') as writer:
-        df.to_excel(writer, index=False)
-    template = BufferedInputFile(output.getvalue(), filename=f"{bot_config['class_name']}_{label}_yangi_shabloni.xlsx")
-    await callback.message.answer_document(template, caption=f"🔄 Ro'yxatni yangilash uchun shablon.")
-    await callback.answer()
-
-@dp.message(F.document)
+@dp.message(BotStates.main_menu, F.document)
 async def handle_excel_upload(message: types.Message):
-    if not bot_config["is_authorized"]: return
-    file_name = message.document.file_name.lower()
-    if not file_name.endswith(('.xlsx', '.xls')): return
-    msg = await message.reply("⏳ Ro'yxat yangilanmoqda...")
-    file_info = await bot.get_file(message.document.file_id)
-    downloaded_file = await bot.download_file(file_info.file_path)
+    document = message.document
+    if not document.file_name.endswith(('.xlsx', '.xls')):
+        await message.answer("⚠️ Iltimos, faqat Excel (.xlsx) formatidagi faylni jo'nating.")
+        return
+
+    status_msg = await message.answer("📥 Fayl o'qilmoqda va xavfsiz shifrlanmoqda, iltimos kuting...")
+    file_bytes = io.BytesIO()
+    await bot.download(document, destination=file_bytes)
+    file_bytes.seek(0)
+    
     try:
-        df = pd.read_excel(io.BytesIO(downloaded_file.read()))
-        role = "parents" if "ota" in file_name else "students"
-        current_db = db_students if role == "students" else db_parents
-        current_db.clear()
-        builder = InlineKeyboardBuilder()
-        for _, row in df.iterrows():
-            name = str(row['Ism_Familiya']).strip()
-            login = str(row['Login']).strip()
-            parol = str(row['Parol']).strip()
-            if name and login and parol:
-                current_db[name] = {"login": login, "parol": parol}
-                builder.button(text=name, callback_data=f"go_{role}_{name}")
-        builder.adjust(2)
-        builder.row(types.InlineKeyboardButton(text="🔄 Ro'yxatni o'zgartirish", callback_data=f"change_{role}"))
-        builder.row(types.InlineKeyboardButton(text="⬅️ Ortga", callback_data="back_main"))
-        await msg.edit_text("✅ Ro'yxat yangilandi!", reply_markup=builder.as_markup())
-    except Exception:
-        await msg.edit_text("❌ Faylni o'qishda xatolik.")
-
-@dp.callback_query(F.data.startswith("go_"))
-async def process_emaktab_login(callback: types.CallbackQuery):
-    data_parts = callback.data.split("_")
-    role = data_parts[1] # indeks 1 etib to'g'rilandi
-    name = callback.data.replace(f"go_{role}_", "")
-    
-    current_db = db_students if role == "students" else db_parents
-    user_data = current_db.get(name)
-    if not user_data: return
-    
-    status_msg = await callback.message.answer(f"⏳ <b>{name}</b> profiliga kirilmoqda...")
-    await callback.answer()
-    result = await try_emaktab_login(user_data["login"], user_data["parol"])
-    await status_msg.edit_text(f"👤 Foydalanuvchi: <b>{name}</b>\nNatija: {result}", parse_mode="HTML")
-
-@dp.callback_query(F.data == "back_main")
-async def back_to_main_menu(callback: types.CallbackQuery):
-    await show_main_menu(callback, bot_config["class_name"])
-    await callback.answer()
-
-# Web server Render uchun
-async def start_web_server():
-    from aiohttp import web
-    
-    async def handle(request):
-        return web.Response(text="Bot is running active!")
+        wb = openpyxl.load_workbook(file_bytes)
+        ws = wb.active
         
-    app = web.Application()
-    app.router.add_get('/', handle)
-    
-    port = int(os.getenv("PORT", 10000))
-    runner = web.AppRunner(app)
-    await runner.setup()
-    site = web.TCPSite(runner, '0.0.0.0', port)
-    await site.start()
+        parsed_data = []
+        for row in ws.iter_rows(min_row=2, values_only=True):
+            if row[0] and row[1] and row[2]:
+                parsed_data.append({
+                    "name": str(row[0]).strip(),
+                    "login": str(row[1]).strip(),
+                    "password": str(row[2]).strip()
+                })
+        
+        user_type = "parents" if "parent" in document.file_name.lower() else "students"
+        
+        # Ma'lumotlarni bazaga xavfsiz shifrlab yozish
+        save_users_to_db(user_type, parsed_data)
+        
+        markup = build_dynamic_keyboard(user_type)
+        await status_msg.delete()
+        await message.answer(f"✨ Ro'yxat muvaffaqiyatli yuklandi va ma'lumotlar bazasida shifrlandi! Jami: **{len(parsed_data)}** ta xavfsiz tugma hosil bo'ldi.", reply_markup=markup, parse_mode="Markdown")
+        
+    except Exception as e:
+        await status_msg.edit_text(f"❌ Faylni qayta ishlashda xatolik yuz berdi: {e}")
 
-async def main():
-    # 1. Render talab qiladigan veb-serverni fonda yoqamiz
-    await start_web_server()
+@dp.callback_query(F.data.startswith("login:"))
+async def handle_silent_login(callback: types.CallbackQuery):
+    _, user_type, idx = callback.data.split(":")
+    idx = int(idx)
     
-    # 2. Telegram botni to'g'ridan-to'g'ri va barqaror asinxron rejimda ishga tushiramiz
-    await dp.start_polling(bot, skip_updates=True)
+    data_list = get_users_from_db(user_type)
+    user = data_list[idx]
+    
+    report_msg = await callback.message.answer(f"⏳ **{user['name']}** uchun eMaktab tizimiga orqa fonda jimgina kirilmoqda. Iltimos kuting...", parse_mode="Markdown")
+    await callback.answer()
+    
+    result = await run_emaktab_login(user['login'], user['password'])
+    
+    if result["status"]:
+        await report_msg.edit_text(f"✅ **Hisobot Holati:**\n👤 Foydalanuvchi: {user['name']}\n📊 Natija: {result['message']}", parse_mode="Markdown")
+    else:
+        await report_msg.edit_text(f"❌ **Hisobot Holati:**\n👤 Foydalanuvchi: {user['name']}\n📊 Xatolik sababi: `{result['message']}`", parse_mode="Markdown")
 
-if __name__ == "__main__":
-    asyncio.run(main())
+@dp.callback_query(F.data.startswith("refresh:"))
+async def handle_refresh(callback: types.CallbackQuery):
+    user_type = callback.data.split(":")[1]
+    excel_file = create_excel_template()
+    file_input = types.BufferedInputFile(excel_file.read(), filename=f"{user_type}_namuna.xlsx")
+    await callback.message.reply_document(file_input, caption="🔄 Yangi ro'yxat namuna fayli. To'ldirib qayta yuboring.")
+    await callback.answer()
+
+@dp.callback_query(F.data == "back_to_menu")
+async def handle_back(callback: types.CallbackQuery):
+    """Ortga tugmasi bosilganda asosiy menyu matnini ko'rsatish"""
+    await callback.message.answer("🏡 Asosiy menyudasiz. Pastdagi menyu tugmalaridan foydalaning.")
+    await callback.answer()
+
+if __name__ == '__main__':
+    asyncio.run(dp.start_polling(bot))
+
