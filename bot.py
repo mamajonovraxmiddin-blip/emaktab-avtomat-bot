@@ -3,6 +3,7 @@ import io
 import openpyxl
 import asyncio
 import sqlite3
+from aiohttp import web
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
@@ -10,7 +11,7 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from emaktab import run_emaktab_login
 from dotenv import load_dotenv
-from cryptography.fernet import Fernet  # Shifrlash uchun
+from cryptography.fernet import Fernet
 
 load_dotenv()
 
@@ -251,6 +252,36 @@ async def handle_back(callback: types.CallbackQuery):
     await callback.message.answer("🏡 Asosiy menyudasiz. Pastdagi menyu tugmalaridan foydalaning.")
     await callback.answer()
 
+async def health_check(request):
+    return web.Response(text="Bot ishlayapti!")
+
+
+async def start_web_server():
+    app = web.Application()
+    app.router.add_get("/", health_check)
+
+    runner = web.AppRunner(app)
+    await runner.setup()
+
+    port = int(os.getenv("PORT", "10000"))
+    site = web.TCPSite(runner, "0.0.0.0", port)
+
+    await site.start()
+
+    print(f"HTTP server {port}-portda ishga tushdi")
+
+    return runner
+
+
+async def main():
+    runner = await start_web_server()
+
+    try:
+        await dp.start_polling(bot)
+    finally:
+        await runner.cleanup()
+
+
 if __name__ == '__main__':
-    asyncio.run(dp.start_polling(bot))
+    asyncio.run(main())
 
